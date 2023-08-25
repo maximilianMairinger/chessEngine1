@@ -13,6 +13,10 @@ import SyncProm from "sync-p"
 
 
 
+const equalAndQuotesRequiredPerAttribute = false
+const equalsAndQuotesCoefficient = 1 + (equalAndQuotesRequiredPerAttribute ? 3 : 0)  // 4 as in: name="value". So 4 extra characters. Or 1 for the space between attrs
+
+
 const alphabet = "abcdefghijklmnopqrstuvwxyz"
 function getAlphabeticUID() {
   let globalInc = -1
@@ -30,6 +34,11 @@ function getAlphabeticUID() {
   }
 }
 
+
+function includesAll<T>(a: T[], allOfAandMore: T[]) {
+  for (const elem of a) if (!allOfAandMore.includes(elem)) return false
+  return true
+}
 
 // const c = keyIndex(() => 0)
 
@@ -56,7 +65,6 @@ function hoistCommonAttributesIntoGroup(content: string) {
   const nextUID = getAlphabeticUID()
 
 
-  const workedThroughAttrUID = new Set()
 
 
   type FullyQualifiedAttrbInJSON = string
@@ -113,7 +121,7 @@ function hoistCommonAttributesIntoGroup(content: string) {
       for (const attrb of canBe.uidAttrbs) doesntHaveAttributes.delete(attrb)
       const newTerm = Logic.and(Logic.or(...canBe.uidAttrbs), Logic.not(Logic.or(...doesntHaveAttributes)))
 
-      // Attention: this element does not yet have the new attributes, as there are possibly many groups created here, I think this is unnecessary work. Add the attributes later, only when a canBe is selected and the elements are also moved inside the group.
+
       const attribs = {} as any; for (const uid of canBe.uidAttrbs) attribs[attrbUidToNameMap.get(uid)!] = true;
       const newElemTemp = {groupPlaceHolder: true, attribs} as any as Element
       tempElemForGroupSet.add(newElemTemp)
@@ -143,7 +151,7 @@ function hoistCommonAttributesIntoGroup(content: string) {
   console.log(JSON.stringify(displayCanBeCombinedSet(canBeCombinedSet), undefined, 4))
   console.log(displayCanBeCombinedSet(canBeCombinedSet))
 
-  
+
   const {bestCanBe} = findBestCanBe(canBeCombinedSet, indexOfUniqueVars)
   
 
@@ -171,46 +179,51 @@ function hoistCommonAttributesIntoGroup(content: string) {
   }
 
   
-  function findBestCanBe(canBeSet: CanBeSetG, indexOfUniqueVars: ((val: string) => string) & MyBidirectionalMap<string, string>): { bestCanBeLen: number, bestCanBe: BestCanBe | undefined } {
-    let bestCanBeLen = 0
+  function findBestCanBe(canBeSet: CanBeSetG, indexOfUniqueVars: ((val: string) => string) & MyBidirectionalMap<string, string>, attrsOfChild = [] as string[], childElemLen = 0): { bestCanBeLen: number, bestCanBe: BestCanBe | undefined, workedThroughAttrUID: Set<string> } {
+    let bestCanBeLen = 0 
     let bestCanBe: BestCanBe | undefined = undefined
+    let workedThroughAttrUID = new Set<string>()
 
-    const deeperFuncLs = [] as (() => void)[]
+
+    // compute deepers first, as they are the ones more shallow in the tree. And we want those first in the workedThroughAttrUID set.
+    const deepers = canBeSet.map((canBe) => findBestCanBe(canBe.deeper, indexOfUniqueVars, canBe.uidAttrbs, canBe.elements.length))
+
     for (let i = 0; i < canBeSet.length; i++) {
       const canBe = canBeSet[i]
+      const deeperBest = deepers[i]
       
       let allAttrOnceLen = 0
+      const myWorkedThroughAttrUID = deeperBest.workedThroughAttrUID
       for (const attr of canBe.uidAttrbs) {
-        if (workedThroughAttrUID.has(attr)) continue
-        workedThroughAttrUID.add(attr)
+        if (myWorkedThroughAttrUID.has(attr)) continue
         const ob = JSON.parse((indexOfUniqueVars.rev().get(attr) as string)) as {name: string, value: string}
-        allAttrOnceLen += ob.name.length + ob.value.length + 3 // 3 as in: name="value". So 3 extra characters.
+        allAttrOnceLen += ob.name.length + ob.value.length + equalsAndQuotesCoefficient 
       }
 
-      
-      const deeperBest = new SyncProm<ReturnType<typeof findBestCanBe>>((res: (a: ReturnType<typeof findBestCanBe>) => void) => {
-        deeperFuncLs.push(() => {
-          res(findBestCanBe(canBe.deeper, indexOfUniqueVars))
-        })
-      }) as Promise<ReturnType<typeof findBestCanBe>>
-
-      deeperBest.then((deeperBest) => {
-        // Len count -1 as the attr needs to be written in the group as well
-        // `<g ></g>`.length = 8. Cost of making a group
-        const myLen = (canBe.elements.length - 1) * allAttrOnceLen + deeperBest.bestCanBeLen - 8
-        if (myLen > bestCanBeLen) {
-          bestCanBeLen = myLen
-          bestCanBe = {...canBe, deeper: deeperBest.bestCanBe}
-        }
-      })
 
       
+
+      
+
+
+      
+      let childHasAllAttrs = includesAll(canBe.uidAttrbs, attrsOfChild)
+
+      const elementLength = canBe.elements.length + (childHasAllAttrs ? childElemLen - 1 : 0) // the -1 in childElemLen - 1 is here because part of the childs element is this group. Which doesnt count for the efficiency of the propagated (to children) attrbs
+      // Len count -1 as the attr needs to be written in the group as well
+      const myLen = (elementLength - 1) * allAttrOnceLen + deeperBest.bestCanBeLen - 7 // `<g></g>`.length = 7. Cost of making a group
+      if (myLen > bestCanBeLen) {
+        for (const attr of canBe.uidAttrbs) myWorkedThroughAttrUID.add(attr)
+        workedThroughAttrUID = myWorkedThroughAttrUID
+        bestCanBeLen = myLen
+        bestCanBe = {...canBe, deeper: deeperBest.bestCanBe}
+      }
     }
 
-    for (const deeperFunc of deeperFuncLs) deeperFunc()
+    
 
 
-    return {bestCanBe, bestCanBeLen}
+    return {bestCanBe, bestCanBeLen, workedThroughAttrUID}
   }
   
   if (bestCanBe) applyBestCanBe(bestCanBe)
@@ -227,9 +240,14 @@ function hoistCommonAttributesIntoGroup(content: string) {
 const time = timoi()
 const result = hoistCommonAttributesIntoGroup(`
 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 35 36">
-  <path x aa/>
-  <path y aa/>
-  <path z aa/>
+  <path x bbb/>
+  <path y bbb/>
+  <path y bbb/>
+  <path y bbb/>
+  <path y bbb/>
+  <path y bbb/>
+  
+
   
 </svg>
 `)

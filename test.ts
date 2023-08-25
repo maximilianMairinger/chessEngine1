@@ -178,8 +178,8 @@ function hoistCommonAttributesIntoGroup(content: string) {
     const deeperFuncLs = [] as (() => void)[]
     for (let i = 0; i < canBeSet.length; i++) {
       const canBe = canBeSet[i]
-      // `<g ></g>`.length = 8. Cost of making a group
-      let allAttrOnceLen = -8
+      
+      let allAttrOnceLen = 0
       for (const attr of canBe.uidAttrbs) {
         if (workedThroughAttrUID.has(attr)) continue
         workedThroughAttrUID.add(attr)
@@ -196,7 +196,8 @@ function hoistCommonAttributesIntoGroup(content: string) {
 
       deeperBest.then((deeperBest) => {
         // Len count -1 as the attr needs to be written in the group as well
-        const myLen = (canBe.elements.length - 1) * allAttrOnceLen + deeperBest.bestCanBeLen
+        // `<g ></g>`.length = 8. Cost of making a group
+        const myLen = (canBe.elements.length - 1) * allAttrOnceLen + deeperBest.bestCanBeLen - 8
         if (myLen > bestCanBeLen) {
           bestCanBeLen = myLen
           bestCanBe = {...canBe, deeper: deeperBest.bestCanBe}
@@ -226,9 +227,10 @@ function hoistCommonAttributesIntoGroup(content: string) {
 const time = timoi()
 const result = hoistCommonAttributesIntoGroup(`
 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 35 36">
-  <path x aaaaaa b/>
-  <path y aaaaaa b c/>
-  <path z aaaaaa c />
+  <path x aa/>
+  <path y aa/>
+  <path z aa/>
+  
 </svg>
 `)
 

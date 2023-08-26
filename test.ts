@@ -13,8 +13,8 @@ import SyncProm from "sync-p"
 
 
 
-const equalAndQuotesRequiredPerAttribute = false
-const equalsAndQuotesCoefficient = 1 + (equalAndQuotesRequiredPerAttribute ? 3 : 0)  // 4 as in: name="value". So 4 extra characters. Or 1 for the space between attrs
+const forceEqualAndQuotesRequiredPerAttribute = false
+const equalsAndQuotesCoefficient = 3  // 3 as in: name="value". So 3 extra characters.
 
 
 const alphabet = "abcdefghijklmnopqrstuvwxyz"
@@ -197,7 +197,7 @@ function hoistCommonAttributesIntoGroup(content: string) {
       for (const attr of canBe.uidAttrbs) {
         if (myWorkedThroughAttrUID.has(attr)) continue
         const ob = JSON.parse((indexOfUniqueVars.rev().get(attr) as string)) as {name: string, value: string}
-        allAttrOnceLen += ob.name.length + ob.value.length + equalsAndQuotesCoefficient 
+        allAttrOnceLen += ob.name.length + ob.value.length + ((ob.value.length !== 0 || forceEqualAndQuotesRequiredPerAttribute) ? equalsAndQuotesCoefficient : 0) + 1 // 1 for the space between attrs
       }
 
 
@@ -240,12 +240,24 @@ function hoistCommonAttributesIntoGroup(content: string) {
 const time = timoi()
 const result = hoistCommonAttributesIntoGroup(`
 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 35 36">
-  <path x bbb/>
-  <path y bbb/>
-  <path y bbb/>
-  <path y bbb/>
-  <path y bbb/>
-  <path y bbb/>
+  <path x aaa/>
+  <path y aaa bbb ccc/>
+  <path z aaa bbb ccc/>
+  <path z aaa bbb ccc/>
+  <path z aaa bbb ccc/>
+  <path z aaa bbb ccc/>
+  <path z aaa bbb ccc/>
+  <path z aaa bbb ccc/>
+  <path z aaa bbb ccc/>
+  <path z aaa bbb ccc/>
+  <path z aaa bbb ccc/>
+  <path z aaa bbb ccc/>
+  <path z aaa bbb ccc/>
+  <path z aaa bbb ccc/>
+  <path z aaa bbb ccc/>
+  <path z aaa bbb ccc/>
+  <path z aaa bbb ccc/>
+  
   
 
   

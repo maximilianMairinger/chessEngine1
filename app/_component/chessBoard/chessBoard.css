@@ -1,0 +1,27 @@
+:host {
+  display: block;
+  position: relative;
+}
+
+component-body {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+}
+
+chess-tile {
+  display: block;
+}
+
+chess-tile.light {
+  background-color: #f0d9b5;
+}
+
+chess-tile.dark {
+  background-color: #b58863;
+}
+
+.figure.black {
+  --color: black;
+  --stroke-color: white;
+}

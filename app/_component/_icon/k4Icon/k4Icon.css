@@ -1,0 +1,5 @@
+:host {
+  --color: var(--color);
+  --stroke-color: var(--stroke-color);
+  --stroke-width: var(--stroke-width);
+}

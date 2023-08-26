@@ -1,11 +1,16 @@
 import Component from "../component"
 import declareComponent from "../../lib/declareComponent"
+import { BodyTypes } from "./pugBody.gen"; import "./pugBody.gen"
 
 export default class Site extends Component {
+  protected body: BodyTypes
+
 
   constructor() {
     super()
 
+    // @ts-ignore 
+    window.board = this.body.board
 
   }
 
@@ -18,3 +23,4 @@ export default class Site extends Component {
 }
 
 declareComponent("site", Site)
+

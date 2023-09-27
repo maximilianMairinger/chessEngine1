@@ -1,13 +1,29 @@
 import ajaon from "ajaon"
-import edom from "extended-dom"
+import { functionBasedClient, functionBasedServer, dummyAdapterPair } from "./../app/lib/functionalAdapter2"
+import delay from "tiny-delay"
 
+console.log("running");
 
-document.body.css("background", "black")
-
-let { post, get } = ajaon();
 
 
 (async () => {
-  let res = await post("call")
-  console.log(res)
+  const { a, b } = dummyAdapterPair()
+
+  const client = functionBasedClient(a)
+
+  functionBasedServer(b, {
+    async test(prefix: string) {
+      console.log("call test")
+      await delay(1000)
+      return (lel: string) => {
+        console.log("call inner")
+        return prefix + lel + "lel"
+      }
+    }
+  })
+
+
+  // console.log(client)
+  console.log(await client.test("pre")("mid"))
+  
 })()

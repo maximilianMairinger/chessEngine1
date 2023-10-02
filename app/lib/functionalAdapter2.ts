@@ -1,9 +1,12 @@
-import clone from "circ-clone"
+import {SynchronousPromise as SyncProm} from "synchronous-promise"
+Promise = SyncProm as any
+
+import clone, { findShortestPathToPrimitive } from "circ-clone"
 import { Adapter } from "./josmAdapter"
-import sani, { OBJECT, OR, NOT, AND, AWAITED, unknown, any } from "sanitize-against"
+import sani, { OBJECT, OR, NOT, AND, AWAITED, unknown, any, CONST, ensure } from "sanitize-against"
 export { polyfill } from "sanitize-against"
 import keyIndex from "key-index"
-
+import * as JSON from "circ-json"
 
 
 // export type WsOnFunc = (eventType: "open" | "close" | "message" | "error", cb: (data: any) => void) => void  
@@ -14,25 +17,37 @@ import keyIndex from "key-index"
 
 
 
-const asPromise = async (a: unknown) => await a
+// const asPromise = async <T>(a: T) => (await a) as T extends Promise<any> ? Awaited<T> : T
+const asPromise = <T>(a: T) => a instanceof SyncProm ? a : SyncProm.resolve(a) as any
+
+
 
 
 
 function incUIDScope() {
-  let uid = 0
+  let uid = 0n
   return () => {
-    return "" + uid++
+    uid = uid + 1n
+    return uid.toString()
   }
 }
 
-function pluck(ob: any, dotJoinedPath: string) {
-  const path = dotJoinedPath.split(".")
+function pluck(ob: any, path: KeyChain, setTo?: unknown) {
   let cur = ob
-  for (const key of path) {
-    if (!Object.hasOwn(cur, key)) throw new Error("Path " + dotJoinedPath + " not found")
+  const setToIsUnset = setTo === undefined
+  for (let i = 0; i < (path.length - (setToIsUnset ? 0 : 1)); i++) {
+    const key = path[i]
+    if (!Object.hasOwn(cur, key)) throw new Error("Path " + path.join(".") + " not found")
     cur = cur[key]
   }
-  return cur
+  if (setToIsUnset) return cur
+  else {
+    if (path.length === 0) return setTo
+    else {
+      cur[path[path.length - 1]] = setTo
+      return ob
+    }
+  }
 }
 
 
@@ -45,7 +60,7 @@ export function simpleFunctionBasedClient(ad: Adapter) {
 
 type FunctionTable = {[key in string]: ((...a: any[]) => unknown) | FunctionTable}
 export function simpleFunctionBasedServer(a: Pick<Adapter, "onMsg">, functionTable: FunctionTable) {
-  a.onMsg(({f, a}: {f: string, a: any[]}) => {
+  a.onMsg(({f, a}: {f: string[], a: any[]}) => {
     try {pluck(functionTable, f)(...a)}
     catch(e) {console.error(e)}
   })
@@ -56,21 +71,51 @@ export function simpleFunctionBasedServer(a: Pick<Adapter, "onMsg">, functionTab
 
 
 
-function cryptUIDScope() {
-  // todo
-  console.warn("todo uid crypt")
-  return incUIDScope()
+
+
+const nestedObPrimitiveFilter = sani(new OBJECT(new AND(new NOT(new CONST(undefined)), new OR(String, Number, Boolean, (p: Promise<any>) => {
+  if (p instanceof Promise) return undefined
+  else throw new Error("Not a promise")
+})), true, true))
+
+
+
+
+type FuncT<T> = 
+  T extends (...a: infer Param) => infer Ret ? 
+    (...a: Param) => FuncT<Ret>
+  : T extends Promise<any> ? 
+    FuncT<Awaited<T>>
+  : T extends object ? 
+    {
+      [key in keyof T]: FuncT<T[key]>
+    }
+  : Promise<T>
+
+
+type EEE = FuncT<() => Promise<() => Promise<number>>>
+
+
+function reverseEnsure(f: Function) {
+  return (...a: unknown[]) => {
+    try {f(...a); return true}
+    catch(e) {return false}
+  }
 }
 
 
+function isNonPrimitive(res: unknown) {
+  return (typeof res === "object" && res !== null) || res instanceof Object
+}
+
+type KeyChain = string[]
 
 
+const isPromise = reverseEnsure(sani(Promise))
+const isUndefined = reverseEnsure(sani(ensure(a => a === undefined)))
 
-
-const nestedObPrimitiveFilter = sani(new OBJECT(new OR(String, Number, Boolean), true, true))
-const saniFunction = sani(Function)
-
-export function functionBasedServer<FunctionMap extends {[key in string]: (...a: any[]) => unknown}>(a: Adapter, functionTable: FunctionMap) {
+type FuncInp = {[key in string]: FuncInp} | string | boolean | number | ((...a: any[]) => any) | Promise<FuncInp>
+export function functionBasedServer<FunctionMap extends FuncInp>(a: Adapter, functionTable: FunctionMap): FuncT<FunctionMap> {
   const fbsIndex = {}
   simpleFunctionBasedServer(a, fbsIndex)
 
@@ -78,34 +123,73 @@ export function functionBasedServer<FunctionMap extends {[key in string]: (...a:
   const nonFunctionalFunctionTable = nestedObPrimitiveFilter(functionTable)
   client.setStatic(nonFunctionalFunctionTable)
 
-  const getUIDCrypt = cryptUIDScope()
-  function functionBasedServerRec<FunctionMap extends {[key in string]: (...a: any[]) => unknown}>(a: Adapter, functionTable: FunctionMap | Function, scope: string) {
-    fbsIndex[scope] = {
-      async callFunction({name, returnId, args}: {name: string | null, returnId: number, args: unknown[]}) {
-        try {
-          const res = await (name === null ? saniFunction(functionTable as Function) : pluck(functionTable, name))(...args)
+  
 
-          if ((typeof res === "object" && res !== null) || res instanceof Object) {
-            const uid = getUIDCrypt()
-            functionBasedServerRec(a, res as any, uid)
-            let parsedRes: unknown
-            try {parsedRes = nestedObPrimitiveFilter(res)}
-            catch(e) {}
-            client.sendReturn({name: returnId, res: parsedRes, uid})
-          }
-          else {
-            client.sendReturn({name: returnId, res})
-          }
-          
+  const getUID = incUIDScope()
+  function functionBasedServerRec<FunctionMap extends FuncInp>(a: Adapter, functionTable: FunctionMap | Function, scope: string) {
+
+    const allPromisePaths = findShortestPathToPrimitive(functionTable, isPromise)
+
+    for (const _path of allPromisePaths) {
+
+      let cur = functionTable as unknown
+      for (const key of _path) {
+        cur = cur[key]
+      }
+      const p = cur as Promise<any>
+
+      const path = [scope, ..._path]
+
+      p.then((res) => {
+        let val: unknown
+        if (isNonPrimitive(res)) {
+          const scope = getUID()
+
+          functionBasedServerRec(a, res as any, scope)
+
+          let parsedRes: unknown
+          try {parsedRes = nestedObPrimitiveFilter(res)}
+          catch(e) {}
+          val = parsedRes
+        }
+        else val = res
+        client.sendPromRes({val, path, res: true})
+      }).catch(e => {
+        client.sendPromRes({val: e.message, path, res: false})
+      })
+    }
+
+
+
+    fbsIndex[scope] = {
+      callFunction({name, returnId, args}: {name: string[], returnId: number, args: unknown[]}) {
+        try {
+          asPromise(pluck(functionTable, name)(...args)).then((res) => {
+            if (isNonPrimitive(res)) {
+              const scope = getUID()
+              functionBasedServerRec(a, res as any, scope)
+              let parsedRes: unknown
+              try {parsedRes = nestedObPrimitiveFilter(res)}
+              catch(e) {}
+              client.sendReturn({returnId, res: parsedRes, scope})
+            }
+            else {
+              client.sendReturn({returnId, res})
+            }
+          }).catch((e) => {
+            client.sendReturn({returnId, rej: e.message})
+          })
         }
         catch(e) {
-          client.sendReturn({name: returnId, rej: e.message})
+          
         }
       }
     }
   }
 
   functionBasedServerRec(a, functionTable, "")
+
+  return {} as any
 }
 
 const saniUID = sani(String)
@@ -114,95 +198,137 @@ export function functionBasedClient(a: Adapter) {
 
   const callback = {
     getUID: incUIDScope(),
-    table: new Map<string, {res: (a: {uid?: string, res: unknown}) => void, rej: (reason: unknown) => void}>()
+    table: new Map<string, {res: (a: {scope?: string, res: unknown}) => void, rej: (reason: unknown) => void}>()
   }
 
 
-  function constrLocalRecFuncProx(p: {uid?: string, res: unknown} | Promise<{uid?: string, res: unknown}>) {
+  function constrLocalRecFuncProx(p: {scope?: string, res: unknown} | Promise<{scope?: string, res: unknown}>) {
     return mkRecursiveFuncProxy((name, args) => {
       const returnId = callback.getUID()
 
-      const nextProm = new Promise<{uid?: string, res: unknown}>((res, rej) => {
+      const nextProm = new Promise<{scope?: string, res: unknown}>((res, rej) => {
         callback.table.set(returnId, {res, rej})
       });
       
-      (async () => {
-        server[saniUID((await p).uid)].callFunction({name, args, returnId})
-      })()
+
+      asPromise(p).then((p) => {
+        server[saniUID(p.scope)].callFunction({name, args, returnId})
+      })
       
       return constrLocalRecFuncProx(nextProm)
-    }, asPromise(p).then(({res}) => res as unknown))
+    }, asPromise(p).then(({res: ob, scope}) => {
+      const promises = findShortestPathToPrimitive(ob, isUndefined)
+
+      for (const promiseKey of promises) {
+        const keyAsString = JSON.stringify([scope, ...promiseKey])
+        pluck(ob, promiseKey, new Promise((res, rej) => {
+          promMap.set(keyAsString, {res, rej})
+        }))
+      }
+
+      return ob
+    }))
   }
 
-  
+  const promMap = new Map<string, {res: Function, rej: Function}>()
 
   const staticOb = new Promise<object>((res) => {
     simpleFunctionBasedServer(a, {
-      sendReturn(arg: {name: string, res: unknown, uid?: string} | {name: string, rej: string}) {
-        const { name } = arg
-        const prom = callback.table.get(name)
+      sendReturn(arg: {returnId: string, res: unknown, scope?: string} | {returnId: string, rej: string}) {
+        const { returnId } = arg
+        const prom = callback.table.get(returnId)
         if (prom !== undefined) {
           if ("res" in arg) {
-            prom.res(saniResUid(arg as {uid?: string, res: unknown}))
+            prom.res(saniResScope(arg as {scope?: string, res: unknown}))
           }
           else prom.rej(arg.rej)
-          callback.table.delete(name)
+          callback.table.delete(returnId)
         }
-        else console.warn(`Got answer for unknown request ${name}`)
+        else console.warn(`Got answer for unknown request ${returnId}`)
       },
       setStatic(ob: object) {
         res(ob)
+      },
+      sendPromRes({val, path, res, scope}: {val: unknown, path: KeyChain, res: boolean, scope: string}) {
+        const keyAsString = JSON.stringify(path)
+        const prom = promMap.get(keyAsString)
+        if (prom !== undefined) {
+          prom[res ? "res" : "rej"](val)
+          promMap.delete(keyAsString)
+        }
+        else console.warn(`Got answer for unknown request ${keyAsString}`)
       }
     })
   })
 
 
 
-  return constrLocalRecFuncProx({uid: "", res: staticOb})
+  return constrLocalRecFuncProx({scope: "", res: staticOb})
 }
-const saniResUid = sani({"uid?": String, res: any})
+const saniResScope = sani({"scope?": String, res: any})
 const saniString = sani(String)
 
-function mkRecursiveFuncProxy(cb: (dotJoinedPath: string, args: unknown[]) => unknown, res: unknown | Promise<unknown> = {}, prevPath = "") {
+function mkRecursiveFuncProxy(cb: (keyChain: KeyChain, args: unknown[]) => unknown, res: unknown | Promise<unknown> = {}, keyChain: KeyChain = []) {
   return new Proxy((...args: any[]) => {
-    return cb(prevPath !== "" ? prevPath.slice(1) : null, args)
+    const lastKey = keyChain[keyChain.length - 1]
+    if (lastKey === "then" || lastKey === "catch") {
+      if (res instanceof Promise) return (res[lastKey] as any)(...args)
+      else return undefined
+    }
+
+    return cb(keyChain, args)
   }, {
     get(target, key: string) {
-      if (key === "then" || key === "catch") {
-        if (res instanceof Promise) return res[key].bind(res)
-        else return undefined
-      }
       try {saniString(key)} catch(e) {return undefined}
       if (res instanceof Promise) return mkRecursiveFuncProxy(cb, res.then((res) => {
         if (res !== null && Object.hasOwn(res, key)) return res[key]
-        else return undefined
-      }), prevPath + "." + key)
+        else {
+          if (key === "then" || key === "catch") return res
+          console.error("Promise resolved to", res)
+        }
+      }), [...keyChain, key])
       else if (res !== null && typeof res === "object" && Object.hasOwn(res, key) && typeof res[key] !== "object") return res[key]
-      else return mkRecursiveFuncProxy(cb, res[key], prevPath + "." + key)
+      else return mkRecursiveFuncProxy(cb, res[key], [...keyChain, key])
     }
   })
 }
 
 
 
+import delay from "tiny-delay"
+import LinkedList from "fast-linked-list"
+import { easingKeyWordDashCase } from "extended-dom"
 
 export function dummyAdapterPair() {
-  const aCbs = []
+  // const connectingDelay = delay(10)
+  const connectingDelay = SyncProm.resolve()
+  const aCbs = new LinkedList<Function>()
   const a = {
     onMsg: (cb: Function) => {
-      aCbs.push(cb)
+      const tok = aCbs.push(cb)
+      return tok.rm.bind(tok)
     },
     send: (msg: unknown) => {
-      bCbs.forEach(cb => cb(msg))
+      const s = JSON.parse(JSON.stringify(msg))
+      // const s = msg
+      connectingDelay.then(() => {
+        bCbs.forEach(cb => {cb(s)})
+      })
     }
   } as Adapter
-  const bCbs = []
+
+  const bCbs = new LinkedList<Function>()
   const b = {
     onMsg: (cb: Function) => {
-      bCbs.push(cb)
+      const tok = bCbs.push(cb)
+      return tok.rm.bind(tok)
     },
     send: (msg: unknown) => {
-      aCbs.forEach(cb => cb(msg))
+      const s = JSON.parse(JSON.stringify(msg))
+      // const s = msg
+      connectingDelay.then(() => {
+        aCbs.forEach(cb => {cb(s)})
+      })
     }
   } as Adapter
 
